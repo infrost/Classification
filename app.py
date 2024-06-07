@@ -116,70 +116,75 @@ def log_classification_results(category_counts, suspect_counts, log_file):
             log.write(f"疑似 {category}: {count} 个词条\n")
         log.write("\n")
 
+def classify_word(word, log_file, output_file, category_counts, suspect_counts):
+    with open(output_file, 'a', encoding='utf-8') as outfile, open(log_file, 'a', encoding='utf-8') as log:
+        try:
+            log.write(f"处理词条: {word}\n")
+            result = None
+
+            if len(word) <= 20:
+                # 使用腾讯AI的实体识别引擎进行命名实体识别（NER）
+                output = engine.parse_text(word)
+                entities = [entity.type.name for entity in output.entities()]
+                log.write(f"识别到的实体: {', '.join(entities)}\n")
+            else:
+                entities = []
+
+            if entities:
+                # 匹配到实体，分类处理
+                entity_matches = {}
+                for entity in entities:
+                    if entity in entity_to_category:
+                        for cat in entity_to_category[entity]:
+                            if cat not in entity_matches:
+                                entity_matches[cat] = 0
+                            entity_matches[cat] += 1
+                if entity_matches:
+                    # 找到包含该实体数量最少的分类
+                    best_category = min(entity_matches, key=entity_matches.get)
+                    result = f"{best_category}【实体识别】"
+                    category_counts[best_category] += 1
+                    
+            if not result:
+                # 基于语义的相似性检测
+                similarities = []
+                for cat, cat_content in categories.items():
+                    similarity = HanLP([(word, cat_content)])[0]
+                    similarities.append((cat, similarity))
+                # 找出最高相似度的分类
+                most_similar_category, confidence = max(similarities, key=lambda x: x[1])
+                if abs(1-confidence) > 0.80:  # 使用一个很小的阈值来比较浮点数
+                    result = f"other无法判断"
+                else:
+                    result = f"other疑似【{most_similar_category}, {confidence:.2f}】"
+                    suspect_counts[most_similar_category] += 1
+            
+            if result == "other无法判断":
+                category = text_classification(word)
+                if category != 'other':
+                    result = f"{category}【字符匹配】"
+                    category_counts[category] += 1
+
+            print(f"成功处理：{word}: {result}")  # 打印成功结果
+            outfile.write(f"{word}: {result}\n")
+            outfile.flush()  # 确保内容立刻写入文件
+        except Exception as e:
+            print(f"请求错误：{e}. 正在重试...")  # 打印错误信息
+            log.write(f"处理词条 {word} 时出现错误：{e}\n")  # 记录错误信息
+
 def classify_words(input_file, output_file, log_file):
     processed_words = load_processed_words(output_file)
     category_counts = {category: 0 for category in categories}
     suspect_counts = {category: 0 for category in categories}
 
-    with open(input_file, 'r', encoding='utf-8') as infile, open(output_file, 'a', encoding='utf-8') as outfile:
-        with open(log_file, 'a', encoding='utf-8') as log:
-            for line in infile:
-                word = line.strip()
-                if word and word not in processed_words:  # 忽略空行和已经处理过的单词
-                    try:
-                        log.write(f"处理词条: {word}\n")
-                        if len(word) <= 20:
-                            # 使用腾讯AI的实体识别引擎进行命名实体识别（NER）
-                            output = engine.parse_text(word)
-                            entities = [entity.type.name for entity in output.entities()]
-                            log.write(f"识别到的实体: {', '.join(entities)}\n")
-                        else:
-                            entities = []
-
-                        if entities:
-                            # 匹配到实体，分类处理
-                            entity_matches = {}
-                            for entity in entities:
-                                if entity in entity_to_category:
-                                    for cat in entity_to_category[entity]:
-                                        if cat not in entity_matches:
-                                            entity_matches[cat] = 0
-                                        entity_matches[cat] += 1
-                            if entity_matches:
-                                # 找到包含该实体数量最少的分类
-                                best_category = min(entity_matches, key=entity_matches.get)
-                                result = f"{best_category}【实体识别】"
-                                category_counts[best_category] += 1
-                                
-                        else:
-                            # 基于语义的相似性检测
-                            similarities = []
-                            for cat, cat_content in categories.items():
-                                similarity = HanLP([(word, cat_content)])[0]
-                                similarities.append((cat, similarity))
-                            # 找出最高相似度的分类
-                            most_similar_category, confidence = max(similarities, key=lambda x: x[1])
-                            if abs(1-confidence) > 0.80:  # 使用一个很小的阈值来比较浮点数
-                                result = f"other无法判断"
-                            else:
-                                result = f"other疑似【{most_similar_category}, {confidence:.2f}】"
-                                suspect_counts[most_similar_category] += 1
-                        
-                        # 如果仍然无法判断，则进行字符串匹配
-                        if result == "other无法判断":
-                            category = text_classification(word)
-                            if category != 'other':
-                                result = f"{category}【字符匹配】"
-                                category_counts[category] += 1
-
-                        print(f"成功处理：{word}: {result}")  # 打印成功结果
-                        outfile.write(f"{word}: {result}\n")
-                        outfile.flush()  # 确保内容立刻写入文件
-                    except Exception as e:
-                        print(f"请求错误：{e}. 正在重试...")  # 打印错误信息
-                        log.write(f"处理词条 {word} 时出现错误：{e}\n")  # 记录错误信息
+    with open(input_file, 'r', encoding='utf-8') as infile:
+        for line in infile:
+            word = line.strip()
+            if word and word not in processed_words:  # 忽略空行和已经处理过的单词
+                classify_word(word, log_file, output_file, category_counts, suspect_counts)
 
     log_classification_results(category_counts, suspect_counts, log_file)
+    return category_counts, suspect_counts
 
 # 日志文件路径
 log_file = 'log.txt'
@@ -187,5 +192,14 @@ log_file = 'log.txt'
 # 记录预处理结果
 log_preprocessing_results(categories, category_entities, category_related, log_file)
 
-# 调用函数处理words.txt并输出到analysis.txt，同时记录日志
-classify_words('keywords.txt', 'analysis.txt', log_file)
+# 调用函数处理keywords.txt并输出到analysis.txt，同时记录日志
+category_counts, suspect_counts = classify_words('keywords.txt', 'analysis.txt', log_file)
+
+# 提示用户继续输入词条进行分类
+print("处理完毕，可以继续输入词条进行分类。输入exit结束程序。")
+while True:
+    user_input = input("请输入词条：")
+    if user_input.lower() == 'exit':
+        break
+    classify_word(user_input.strip(), log_file, 'analysis.txt', category_counts, suspect_counts)
+print("程序已结束。")
